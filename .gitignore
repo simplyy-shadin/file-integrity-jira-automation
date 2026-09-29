@@ -1,0 +1,30 @@
+# Secrets
+.env
+
+# File Integrity Monitor runtime state
+.fim-state/
+*.db
+*.db-shm
+*.db-wal
+*.log
+baseline.json
+file_hashes.json
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
