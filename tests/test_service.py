@@ -119,3 +119,91 @@ def test_force_is_required_to_replace_existing_baseline(settings):
 
     initialize_baseline(settings, force=True)
     assert event_types(settings)[0] == "BASELINE_INITIALIZED"
+
+
+def test_initialization_refuses_incomplete_scan(monkeypatch, settings):
+    import fim.service as service
+    from fim.scanner import ScanError, ScanResult
+
+    monkeypatch.setattr(
+        service,
+        "scan_tree",
+        lambda *args, **kwargs: ScanResult(
+            files={},
+            errors=(
+                ScanError(
+                    path="restricted",
+                    reason="PermissionError: denied",
+                    is_scope=True,
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError):
+        initialize_baseline(settings)
+
+
+def test_accept_requires_audit_reason(settings):
+    (settings.monitor_path / "a.txt").write_text("a")
+    initialize_baseline(settings)
+
+    with pytest.raises(ValueError):
+        accept_current_state(settings, reason="   ")
+
+
+def test_accept_refuses_scan_errors(monkeypatch, settings):
+    import fim.service as service
+    from fim.scanner import ScanError, ScanResult
+
+    (settings.monitor_path / "a.txt").write_text("a")
+    initialize_baseline(settings)
+
+    monkeypatch.setattr(
+        service,
+        "scan_tree",
+        lambda *args, **kwargs: ScanResult(
+            files={},
+            errors=(
+                ScanError(
+                    path="a.txt",
+                    reason="OSError: unstable",
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError):
+        accept_current_state(settings, reason="should fail")
+
+
+def test_retry_pending_requires_jira(settings):
+    from fim.service import retry_pending
+
+    with pytest.raises(RuntimeError):
+        retry_pending(settings)
+
+
+def test_monitor_loop_runs_scan_before_sleep(monkeypatch, settings):
+    import fim.service as service
+    from fim.service import ScanSummary
+
+    calls = []
+
+    monkeypatch.setattr(
+        service,
+        "scan_once",
+        lambda _settings: calls.append("scan")
+        or ScanSummary(0, 0, 0, 0, 0),
+    )
+
+    def stop(_seconds):
+        calls.append("sleep")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(service.time, "sleep", stop)
+
+    with pytest.raises(KeyboardInterrupt):
+        service.monitor_forever(settings)
+
+    assert calls == ["scan", "sleep"]
