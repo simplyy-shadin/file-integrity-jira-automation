@@ -60,3 +60,40 @@ def test_state_directory_inside_monitor_is_auto_excluded(monkeypatch, tmp_path):
 
     assert ".security-state" in settings.exclude_patterns
     assert ".security-state/**" in settings.exclude_patterns
+
+
+def test_integrity_key_must_be_hex(monkeypatch, tmp_path):
+    base_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("FIM_INTEGRITY_KEY", "not-hex")
+
+    with pytest.raises(ConfigurationError):
+        Settings.from_env()
+
+
+def test_integrity_key_must_be_long_enough(monkeypatch, tmp_path):
+    base_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("FIM_INTEGRITY_KEY", "ab" * 8)
+
+    with pytest.raises(ConfigurationError):
+        Settings.from_env()
+
+
+def test_invalid_interval_is_rejected(monkeypatch, tmp_path):
+    base_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("FIM_INTERVAL_SECONDS", "zero")
+
+    with pytest.raises(ConfigurationError):
+        Settings.from_env()
+
+
+def test_monitor_path_must_exist(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(
+        "FIM_MONITOR_PATH",
+        str(tmp_path / "missing"),
+    )
+    monkeypatch.setenv("FIM_INTEGRITY_KEY", "ab" * 32)
+    monkeypatch.setenv("JIRA_ENABLED", "false")
+
+    with pytest.raises(ConfigurationError):
+        Settings.from_env()
