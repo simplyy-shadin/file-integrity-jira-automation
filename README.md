@@ -1,183 +1,306 @@
+# File Integrity Detection & Jira Incident Automation
 
-<div align="center">
+A Blue Team / Detection Engineering project that establishes a **signed file baseline**, detects unauthorized filesystem changes, stores immutable tamper-evident security events, and reliably forwards incidents to Jira Cloud.
 
-![Project Status](https://img.shields.io/badge/Project_Status-Active-brightgreen)
-![Python](https://img.shields.io/badge/Python-3.x-blue)
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+This is intentionally more than a checksum script. The project separates trusted state, detection, immutable security evidence, and incident delivery so an alerting outage cannot silently erase a file-integrity event.
 
-</div>
+## What the project demonstrates
 
-# 🛡️ File Integrity Monitor with Automated Jira Ticketing
+- recursive SHA-256 file-integrity monitoring
+- file creation, deletion, content-change, metadata-change, and symlink detection
+- HMAC-signed baseline verification
+- atomic baseline persistence
+- explicit baseline initialization and acceptance
+- stable file hashing with replacement/race checks
+- scan-error handling that avoids false deletion alerts
+- immutable SQLite security-event storage
+- HMAC-linked tamper-evident event chaining
+- per-baseline event deduplication
+- structured JSON operational logging with rotation
+- durable Jira delivery state
+- Jira Cloud REST API v3 with Atlassian Document Format
+- explicit HTTP timeouts
+- Jira 429 Retry-After handling
+- exponential retry/backoff and dead-letter handling
+- configurable exclusions and environment-based secrets
+- operator CLI for monitoring, verification, event review, and response
+- multi-version Python CI with attack-focused tests
 
-Continuously monitors a specified folder for file changes (addition, deletion, modification), logs events, and automatically creates issues in Jira for any detected change—helping organizations track integrity and security events seamlessly.
+## Architecture
 
----
+~~~text
+                    Protected directory
+                           |
+                           v
+                    Filesystem scanner
+                           |
+              +------------+-------------+
+              |                          |
+           SHA-256                    metadata
+              |                 mode / UID / GID
+              +------------+-------------+
+                           |
+                           v
+                  Signed trusted baseline
+                    HMAC-SHA256
+                           |
+                           v
+                     Detection engine
+          +---------+------+-------+----------+
+          |         |              |          |
+        ADDED    MODIFIED        DELETED   SCAN_ERROR
+          |         |              |          |
+          +---------+------+-------+----------+
+                           |
+                           v
+                 Immutable security event
+                           |
+                  HMAC-linked event chain
+                           |
+                           v
+                   SQLite event store
+                           |
+              +------------+-------------+
+              |                          |
+              v                          v
+        local evidence              Jira delivery
+                                      queue
+                                        |
+                             timeout / backoff / retry
+                                        |
+                                        v
+                                  Jira incident
+~~~
 
-## 🚀 Features
+See [Architecture](docs/ARCHITECTURE.md), [Threat Model](docs/THREAT_MODEL.md), and [Detection Model](docs/DETECTION_MODEL.md).
 
-- **Monitors file changes** in any directory (modification, creation, removal)
-- **SHA-256 hash computation** to detect changes reliably
-- **Logs events** to `file_integrity.log`
-- **Automated Jira ticket creation** for every issue found
-- Configurable via `.env` for credentials and project details
-- **Runs every minute** (can be adjusted)
+## Trusted baseline workflow
 
----
+The monitor does **not** replace its baseline after every scan.
 
-## 📦 Prerequisites
+That prevents this failure mode:
 
-- Python 3.7+
-- A Jira Cloud account (free or paid)
-- Python packages in `requirements.txt`:
-  - `python-dotenv`
-  - `requests`
-  - `schedule`
+~~~text
+file changed
+    |
+    v
+Jira temporarily fails
+    |
+    v
+baseline silently updated
+    |
+    v
+next scan sees no change
+~~~
 
----
-## 🧱 Folder Structure
-```
-file-integrity-jira-automation/
-│
-├── main.py                  # Main script
-├── .env.example             # Sample environment file
-├── requirements.txt         # Python dependencies
-└── file_hashes.json         # Auto-generated file storing hashes
+Instead, deviations remain visible until an operator deliberately approves the current state:
 
-```
-## 🐙 How to Get Your Jira Cloud API Credentials and Project Info
+~~~bash
+fim-monitor baseline accept --reason "Approved deployment CHG-1042"
+~~~
 
-### 1. **Create a Jira Account**
-- Sign up at [https://www.atlassian.com/software/jira](https://www.atlassian.com/software/jira)
-- Choose **Jira Software Cloud** (free tier is fine)
+Baseline changes are themselves written to the local audit chain.
 
-### 2. **Create a Jira Project**
-- Once logged in, select `Projects > Create Project`
-- Pick a template ("Scrum", "Kanban" or "Bug Tracking")
-- Set your **Project Key** (e.g., `KAN`)
+## Detection types
 
-### 3. **Get Your Jira Cloud URL**
-- Will look like: `https://your-domain.atlassian.net`
+| Event | Meaning | Default severity |
+|---|---|---:|
+| ADDED | New path not present in baseline | MEDIUM |
+| MODIFIED | File content or file type changed | HIGH |
+| SYMLINK_CHANGED | Symbolic-link target changed | HIGH |
+| METADATA_CHANGED | Mode, UID, or GID changed | MEDIUM |
+| DELETED | Baseline path is genuinely absent | HIGH |
+| SCAN_ERROR | File/directory could not be safely inspected | HIGH |
+| BASELINE_INTEGRITY_FAILURE | Baseline HMAC verification failed | CRITICAL |
 
-### 4. **Generate a Jira API Token**
-- Go to [Atlassian API tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
-- Click **Create API token** and copy the value
+A read error is deliberately **not** treated as deletion.
 
-### 5. **Find Your Account Email**
-- The email you use to log into Jira
+## Tamper-evident event chain
 
----
+Every immutable event records the previous event HMAC:
 
-## 🔑 Setting Up Your `.env` File
+~~~text
+GENESIS
+   |
+   v
+Event 1 + previous hash -> HMAC 1
+                           |
+                           v
+Event 2 + HMAC 1 --------> HMAC 2
+                           |
+                           v
+Event 3 + HMAC 2 --------> HMAC 3
+~~~
 
-Create a file named `.env` in the project root with the following content:
+Run:
 
-JIRA_EMAIL=your-jira-login-email@example.com                                                                                                                                                                       
-JIRA_API_KEY=your-api-token
+~~~bash
+fim-monitor verify
+~~~
 
-git clone https://github.com/yourusername/file-integrity-monitor.git                                                                                                                                          
-cd file-integrity-monitor
+to verify both the signed baseline and the local event chain.
 
-python -m venv venv                                                                                                                                                                                              
-source venv/bin/activate # Linux/Mac                                                                                                                                                                           
-venv\Scripts\activate # Windows
+## Jira incident delivery
 
-pip install -r requirements.txt
+Detection state and delivery state are separate.
 
-**Example `requirements.txt`:**                                                                                                                                                                              
-python-dotenv                                                                                                                                                                                                  
-schedule                                                                                                                                                                                                           
-requests
+~~~text
+security event
+    |
+    v
+persist locally
+    |
+    v
+Jira attempt
+    |
+    +-- success ----------> delivered
+    |
+    +-- retryable --------> retry queue
+    |                         |
+    |                  Retry-After / backoff
+    |
+    +-- permanent/max ----> dead letter
+~~~
 
----
+The event ID is included in the Jira issue body as a correlation marker.
 
-## 📁 Configuration
+## Quick start
 
-Open `file_integrity_monitor.py` and edit:
+### 1. Clone and install
 
-FOLDER_TO_MONITOR = r"/absolute/path/to/folder"                                                                                                                                                               
-JIRA_URL = "https://your-domain.atlassian.net"                                                                                                                                                               
-JIRA_PROJECT_KEY = "KAN" # Set to your Jira project key                                                                                                                                                       
-JIRA_ISSUE_TYPE = "Bug" # Typical values: "Bug", "Task", "Story"                                                                                                                                               
+~~~bash
+git clone https://github.com/simplyy-shadin/file-integrity-jira-automation.git
+cd file-integrity-jira-automation
 
----
+python -m venv .venv
+source .venv/bin/activate
+# Windows: .venv\Scripts\activate
 
-## 🏃 Usage
+pip install -e ".[dev]"
+cp .env.example .env
+~~~
 
-python file_integrity_monitor.py
+### 2. Generate the local integrity key
 
+~~~bash
+python -c "import secrets; print(secrets.token_hex(32))"
+~~~
 
-- The script will scan the folder, log changes, and create Jira issues as needed.
-- It repeats every minute by default.
+Store the generated value in FIM_INTEGRITY_KEY. It is the root of trust for baseline signatures and event-chain verification and must not be committed.
 
----
+### 3. Configure the monitored directory
 
-## 📋 What Gets Logged and Sent to Jira?
+~~~text
+FIM_MONITOR_PATH=/absolute/path/to/protected/directory
+FIM_STATE_DIR=.fim-state
+FIM_INTERVAL_SECONDS=60
+~~~
 
-- **Modification**: Existing file has a changed hash
-- **New File**: Found a new file
-- **File Removal**: Previously known file is now missing
+Runtime state should ideally live outside the protected directory. If the configured state directory is inside the monitored root, it is automatically excluded.
 
-Each triggers a new Jira issue with summary and descriptive details.
+### 4. Configure Jira
 
----
+~~~text
+JIRA_ENABLED=true
+JIRA_URL=https://your-domain.atlassian.net
+JIRA_EMAIL=analyst@example.com
+JIRA_API_TOKEN=<api token>
+JIRA_PROJECT_KEY=SEC
+JIRA_ISSUE_TYPE=Task
+~~~
 
-## 🛠 Example Jira Issue Created
+For local-only detection:
 
-- **Summary**: `File Integrity Issue: Modification - config.yaml`
-- **Description**: `A Modification was detected for the file: /home/user/config.yaml. Please investigate.`
-- **Type**: Bug (or your chosen issue type)
+~~~text
+JIRA_ENABLED=false
+~~~
 
----
+### 5. Establish trust
 
-## 🧑‍💻 How The Script Works
+~~~bash
+fim-monitor baseline init
+~~~
 
-1. Loads hashes from `file_hashes.json` (or creates it)
-2. Scans all files, computes SHA-256 hash per file
-3. Detects new/changed/removed files
-4. Logs every action to `file_integrity.log`
-5. Creates Jira ticket via REST API for each event
-6. Updates `file_hashes.json`
-7. Repeats every minute using `schedule`
+The first baseline does not create a storm of "new file" Jira issues.
 
----
+### 6. Check Jira connectivity
 
-## 🆘 Troubleshooting
+~~~bash
+fim-monitor jira check
+~~~
 
-- **Jira API errors**: Check your `.env` values and project key; consult [Jira REST API docs](https://developer.atlassian.com/cloud/jira/platform/rest/v2/intro/)
-- **Permissions**: Script must have read/write access to the monitored folder and log/hash files
-- **No `.env`**: Script will fail if Jira email/token are unset
+### 7. Scan or monitor
 
----
+~~~bash
+fim-monitor scan
+fim-monitor monitor
+~~~
 
-## 🚦 To Stop the Script
+## Operator commands
 
-- Simply press `CTRL+C` in the terminal
+| Command | Purpose |
+|---|---|
+| fim-monitor baseline init | Establish initial trusted state |
+| fim-monitor baseline init --force | Explicitly replace an existing baseline |
+| fim-monitor baseline accept --reason "..." | Approve investigated current state |
+| fim-monitor scan | Run one scan and process due Jira deliveries |
+| fim-monitor scan --no-deliver | Persist detections without contacting Jira |
+| fim-monitor monitor | Continuously scan |
+| fim-monitor events --limit 50 | Review immutable local events |
+| fim-monitor verify | Verify baseline signature and event HMAC chain |
+| fim-monitor retry | Retry due Jira deliveries |
+| fim-monitor jira check | Validate Jira authentication/connectivity |
+| fim-monitor status | Show integrity and delivery-queue status |
 
----
+## Configuration
 
-## 📄 License
+| Variable | Purpose | Default |
+|---|---|---|
+| FIM_MONITOR_PATH | Directory protected by the monitor | required |
+| FIM_STATE_DIR | Baseline, database, and logs | .fim-state |
+| FIM_INTERVAL_SECONDS | Continuous-monitor interval | 60 |
+| FIM_INTEGRITY_KEY | HMAC root-of-trust key | required |
+| FIM_EXCLUDE_PATTERNS | Additional comma-separated glob exclusions | empty |
+| JIRA_ENABLED | Enable Jira delivery | true |
+| JIRA_URL | Jira Cloud site URL | required when enabled |
+| JIRA_EMAIL | Atlassian account email | required when enabled |
+| JIRA_API_TOKEN | Atlassian API token | required when enabled |
+| JIRA_PROJECT_KEY | Destination Jira project | required when enabled |
+| JIRA_ISSUE_TYPE | Issue type | Task |
+| JIRA_TIMEOUT_SECONDS | HTTP timeout | 10 |
+| JIRA_MAX_ATTEMPTS | Delivery attempts before dead letter | 5 |
 
-MIT License
+## Testing
 
----
+~~~bash
+ruff check .
+pytest --cov=fim --cov-report=term-missing
+~~~
 
-## 🙋 Connect with Me
+GitHub Actions tests Python 3.11, 3.12, and 3.13 with an enforced coverage threshold.
 
-<p align="center">
-<a href="www.linkedin.com/in/shadin-k-v-cybersecurity/" target="_blank">
-  <img src="https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white" alt="LinkedIn"/>
-</a>
-<a href="https://tryhackme.com/p/simplyy.hacker" target="_blank">
-  <img src="https://img.shields.io/badge/TryHackMe-88cc14?style=for-the-badge&logo=tryhackme&logoColor=white" alt="TryHackMe"/>
-</a>
-<a href="https://medium.com/@shdnkval" target="_blank">
-  <img src="https://img.shields.io/badge/Medium-12100E?style=for-the-badge&logo=medium&logoColor=white" alt="Medium"/>
-</a>
-<a href="https://x.com/simplyy_shadin" target="_blank">
-  <img src="https://img.shields.io/badge/Twitter-1DA1F2?style=for-the-badge&logo=twitter&logoColor=white" alt="Twitter"/>
-</a>
-</p>
+The suite covers baseline tampering, wrong HMAC keys, malformed baselines, content/metadata/symlink changes, unreadable files, false-deletion conditions, duplicate detections, event-database tampering, Jira rate limits, Jira timeouts, delivery state, baseline acceptance, and configuration failures.
 
----
+## Operational deployment
 
-<p align="center"><samp>~ Automated security is better security. ~</samp></p>
+A hardened example systemd unit is provided at [deploy/fim-monitor.service](deploy/fim-monitor.service). See [Operations](docs/OPERATIONS.md) before using it.
+
+## Security boundaries
+
+This project makes the baseline and local event history **tamper-evident**, not tamper-proof.
+
+An attacker with sufficient privilege to steal the HMAC key and rewrite local state can forge both. Production designs should protect the key outside the monitored tree and forward important evidence to a remote security system.
+
+This is not an EDR, kernel monitor, remote-attestation system, or replacement for an enterprise FIM product. Polling also means a file created and removed entirely between scans may not be observed.
+
+Jira issue creation is effectively at-least-once delivery. An ambiguous network failure after Jira accepts a request can theoretically produce a duplicate on a later retry; the event ID provides correlation.
+
+## Portfolio focus
+
+This repository demonstrates **Blue Team detection engineering, file-integrity monitoring, tamper-evident security telemetry, and incident-response automation**.
+
+It intentionally stays distinct from DevSecOps pipeline security and application authentication projects.
+
+## License
+
+MIT License.
