@@ -53,22 +53,36 @@ def _hash_regular_file(path: Path, attempts: int = 2) -> tuple[str, os.stat_resu
     last_error: Exception | None = None
 
     for _ in range(attempts):
-        before = path.stat(follow_symlinks=False)
-        digest = hashlib.sha256()
+        flags = os.O_RDONLY
+        flags |= getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
 
         try:
-            with path.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
+            descriptor = os.open(path, flags)
         except OSError as exc:
             last_error = exc
             continue
 
-        after = path.stat(follow_symlinks=False)
+        digest = hashlib.sha256()
+        try:
+            with os.fdopen(descriptor, "rb", closefd=True) as handle:
+                before = os.fstat(handle.fileno())
+                if not stat.S_ISREG(before.st_mode):
+                    raise OSError(f"Refusing to hash non-regular file: {path}")
+
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+
+                after = os.fstat(handle.fileno())
+        except OSError as exc:
+            last_error = exc
+            continue
+
         if (
             before.st_size == after.st_size
             and before.st_mtime_ns == after.st_mtime_ns
             and before.st_ino == after.st_ino
+            and before.st_dev == after.st_dev
         ):
             return digest.hexdigest(), after
 
