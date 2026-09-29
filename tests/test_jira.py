@@ -191,3 +191,60 @@ def test_jira_connection_check(jira_settings):
     ).validate_connection()
 
     assert profile["displayName"] == "SOC Analyst"
+
+
+def test_jira_connection_network_failure_is_retryable(jira_settings):
+    class FailingSession:
+        def get(self, *args, **kwargs):
+            raise requests.ConnectionError("offline")
+
+    try:
+        JiraClient(
+            jira_settings,
+            session=FailingSession(),
+        ).validate_connection()
+    except JiraDeliveryError as exc:
+        assert exc.retryable is True
+    else:
+        raise AssertionError("Expected JiraDeliveryError")
+
+
+def test_jira_connection_500_is_retryable(jira_settings):
+    session = FakeSession(
+        get_response=FakeResponse(
+            status_code=503,
+            text="unavailable",
+        )
+    )
+
+    try:
+        JiraClient(
+            jira_settings,
+            session=session,
+        ).validate_connection()
+    except JiraDeliveryError as exc:
+        assert exc.retryable is True
+    else:
+        raise AssertionError("Expected JiraDeliveryError")
+
+
+def test_delivery_processor_schedules_retry_for_server_error(
+    jira_settings,
+    settings,
+):
+    store = EventStore(settings.database_path, settings.integrity_key)
+    sample_event(store)
+    client = JiraClient(
+        jira_settings,
+        session=FakeSession(
+            post_response=FakeResponse(
+                status_code=503,
+                text="unavailable",
+            )
+        ),
+    )
+
+    summary = process_pending_deliveries(store, client, max_attempts=3)
+
+    assert summary["retry"] == 1
+    assert store.delivery_status_counts() == {"retry": 1}
