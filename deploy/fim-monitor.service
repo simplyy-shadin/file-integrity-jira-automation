@@ -1,0 +1,33 @@
+[Unit]
+Description=File Integrity Detection and Jira Incident Automation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fim-monitor
+Group=fim-monitor
+WorkingDirectory=/opt/file-integrity-jira-automation
+EnvironmentFile=/etc/fim-monitor.env
+ExecStart=/opt/file-integrity-jira-automation/.venv/bin/fim-monitor monitor
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+UMask=0077
+
+ReadWritePaths=/var/lib/fim-monitor
+
+[Install]
+WantedBy=multi-user.target
