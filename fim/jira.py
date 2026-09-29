@@ -70,8 +70,7 @@ class JiraClient:
                     f"{summary_path}"
                 )[:255],
                 "issuetype": {"name": self.settings.issue_type},
-                "labels": ["file-integrity-monitor", marker],
-                "description": _adf_description(event),
+                "description": _adf_description(event, marker),
             }
         }
 
@@ -133,9 +132,10 @@ def _text(value: Any) -> str:
     return str(value)
 
 
-def _adf_description(event: SecurityEvent) -> dict:
+def _adf_description(event: SecurityEvent, marker: str) -> dict:
     lines = [
         ("Event ID", event.id),
+        ("Deduplication marker", marker),
         ("Detected", event.detected_at),
         ("Severity", event.severity),
         ("Type", event.event_type),
