@@ -1,8 +1,8 @@
 import os
-from pathlib import Path
 
 import pytest
 
+import fim.scanner as scanner
 from fim.scanner import scan_tree
 
 
@@ -61,14 +61,14 @@ def test_scanner_records_unreadable_file_error(monkeypatch, settings):
     file_path = settings.monitor_path / "protected.txt"
     file_path.write_text("content")
 
-    original_open = Path.open
+    original_open = scanner.os.open
 
-    def deny_open(self, *args, **kwargs):
-        if self.name == "protected.txt":
+    def deny_open(path, flags, *args, **kwargs):
+        if os.fspath(path).endswith("protected.txt"):
             raise PermissionError("denied")
-        return original_open(self, *args, **kwargs)
+        return original_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", deny_open)
+    monkeypatch.setattr(scanner.os, "open", deny_open)
 
     result = scan_tree(
         settings.monitor_path,
